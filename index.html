@@ -1,1 +1,490 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, 
+  onAuthStateChanged, 
+  signOut,
+  signInWithCredential,
+  GoogleAuthProvider,
+  signInWithCustomToken,
+  signInAnonymously
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  addDoc, 
+  onSnapshot, 
+  query, 
+  setDoc,
+  deleteDoc,
+  serverTimestamp
+} from 'firebase/firestore';
+import { 
+  LayoutDashboard, 
+  Database, 
+  Heart, 
+  TrendingUp, 
+  Settings, 
+  Plus, 
+  Search, 
+  ChevronLeft, 
+  X, 
+  Upload, 
+  LogOut, 
+  Sparkles, 
+  Zap, 
+  Layers, 
+  ArrowUpRight, 
+  MapPin, 
+  Calendar, 
+  Loader2, 
+  Tag, 
+  Trash2 
+} from 'lucide-react';
 
+/**
+ * 【🔥 關鍵修正：Firebase Firestore 安全規則】
+ * 請務必將以下規則完整貼入 Firebase Console > Firestore > Rules
+ * * service cloud.firestore {
+ * match /databases/{database}/documents {
+ * // 匹配公共資料 (例如：分類)
+ * match /artifacts/{appId}/public/data/{collectionName}/{docId} {
+ * allow read, write: if request.auth != null;
+ * }
+ * // 匹配私有資料 (例如：用戶物件)
+ * match /artifacts/{appId}/users/{userId}/{collectionName}/{docId} {
+ * allow read, write: if request.auth != null && request.auth.uid == userId;
+ * }
+ * }
+ * }
+ */
+
+// --- Firebase 基礎配置 ---
+const firebaseConfig = {
+  apiKey: "AIzaSyCkz6O29c02IuYQQEafM6669VzG23kX4Oc",
+  authDomain: "colletor-4c326.firebaseapp.com",
+  projectId: "colletor-4c326",
+  storageBucket: "colletor-4c326.firebasestorage.app",
+  messagingSenderId: "1036271994554",
+  appId: "1:1036271994554:web:08f125822a27aeaa78a483",
+  measurementId: "G-SVNT07ZYZ4"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+// 獲取當前環境的 App ID (RULE 1)
+const currentAppId = typeof __app_id !== 'undefined' ? __app_id : 'collection-master';
+
+// --- UI 子組件 ---
+const SidebarItem = ({ icon: Icon, label, active, onClick }) => (
+  <button 
+    onClick={onClick}
+    className={`w-full flex items-center space-x-4 px-5 py-4 rounded-2xl transition-all duration-300 relative overflow-hidden group ${
+      active 
+        ? 'bg-gradient-to-r from-blue-600/20 to-purple-600/10 text-white shadow-[0_0_20px_rgba(37,99,235,0.2)]' 
+        : 'text-slate-500 hover:text-slate-200'
+    }`}
+  >
+    {active && <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-500 shadow-[0_0_15px_#3b82f6]" />}
+    <Icon size={20} className={active ? 'text-blue-400' : 'group-hover:scale-110 transition-transform'} />
+    <span className="font-bold text-sm tracking-[0.2em]">{label}</span>
+    {active && <Zap size={12} className="ml-auto text-blue-400 animate-pulse" />}
+  </button>
+);
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [isAuthenticating, setIsAuthenticating] = useState(true);
+  const [activeTab, setActiveTab] = useState('DASHBOARD');
+  const [collections, setCollections] = useState([]);
+  const [items, setItems] = useState([]);
+  const [selectedCollection, setSelectedCollection] = useState(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [modalType, setModalType] = useState('ITEM');
+  
+  // 表單狀態
+  const [formName, setFormName] = useState('');
+  const [formPrice, setFormPrice] = useState('');
+  const [formCategory, setFormCategory] = useState('WATCHES');
+  const [previewUrl, setPreviewUrl] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
+  
+  const googleBtnContainerRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  // 1. 初始化驗證 (RULE 3 - 修正 Token Mismatch 錯誤)
+  useEffect(() => {
+    let isMounted = true;
+    const initAuth = async () => {
+      try {
+        // 嘗試使用 Custom Token，如果失敗則自動轉向匿名登入
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          try {
+            await signInWithCustomToken(auth, __initial_auth_token);
+          } catch (tokenErr) {
+            console.warn("Custom Token 驗證失敗，嘗試匿名登入:", tokenErr.message);
+            await signInAnonymously(auth);
+          }
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Auth 系統嚴重錯誤:", err);
+      } finally {
+        if (isMounted) setIsAuthenticating(false);
+      }
+    };
+
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      if (isMounted) setUser(u);
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, []);
+
+  // 2. 數據監聽 (RULE 1 & 2)
+  useEffect(() => {
+    if (!user || isAuthenticating) return;
+
+    // A. 公共分類監聽
+    const colRef = collection(db, 'artifacts', currentAppId, 'public', 'data', 'categories');
+    const unsubscribeCols = onSnapshot(colRef, 
+      (snapshot) => {
+        setCollections(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      }, 
+      (err) => console.error(`[權限錯誤] 公共資料存取失敗`, err)
+    );
+
+    // B. 個人物件監聽
+    const itemsRef = collection(db, 'artifacts', currentAppId, 'users', user.uid, 'items');
+    const unsubscribeItems = onSnapshot(itemsRef, 
+      (snapshot) => {
+        setItems(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      }, 
+      (err) => console.error(`[權限錯誤] 個人資料存取失敗`, err)
+    );
+
+    return () => {
+      unsubscribeCols();
+      unsubscribeItems();
+    };
+  }, [user, isAuthenticating]);
+
+  // Google 登入邏輯
+  useEffect(() => {
+    if (!user?.displayName && !isAuthenticating) {
+      const script = document.createElement('script');
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.defer = true;
+      document.head.appendChild(script);
+      script.onload = () => {
+        if (window.google) {
+          window.google.accounts.id.initialize({
+            client_id: "1036271994554-pk9u8tjr3o2c8h7l2f1v89k7o3f8p6u3.apps.googleusercontent.com",
+            callback: async (response) => {
+              setIsAuthenticating(true);
+              try {
+                const credential = GoogleAuthProvider.credential(response.credential);
+                await signInWithCredential(auth, credential);
+              } catch (e) {
+                console.error("Google Auth 失敗:", e);
+              } finally {
+                setIsAuthenticating(false);
+              }
+            },
+          });
+          if (googleBtnContainerRef.current) {
+            window.google.accounts.id.renderButton(googleBtnContainerRef.current, { 
+              theme: "filled_black", size: "large", width: 280, shape: "pill" 
+            });
+          }
+        }
+      };
+    }
+  }, [user, isAuthenticating]);
+
+  const handleLogout = async () => {
+    await signOut(auth);
+    setActiveTab('DASHBOARD');
+  };
+
+  const handleFileChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => setPreviewUrl(reader.result);
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleSave = async () => {
+    if (!user || !formName) return;
+    setIsSaving(true);
+    try {
+      if (modalType === 'ITEM') {
+        const ref = collection(db, 'artifacts', currentAppId, 'users', user.uid, 'items');
+        await addDoc(ref, {
+          name: formName,
+          price: Number(formPrice) || 0,
+          collectionId: selectedCollection?.id || 'default',
+          img: previewUrl || '',
+          createdAt: serverTimestamp(),
+          date: new Date().toISOString().split('T')[0],
+          serial: `SN-${Math.floor(Math.random() * 1000000)}`,
+          location: '預設儲藏點',
+          tags: ['#同步完成']
+        });
+      } else {
+        const ref = collection(db, 'artifacts', currentAppId, 'public', 'data', 'categories');
+        await addDoc(ref, {
+          title: formName,
+          category: formCategory,
+          icon: '💎',
+          color: 'from-blue-500 to-purple-500',
+          createdAt: serverTimestamp()
+        });
+      }
+      setIsModalOpen(false);
+      setFormName('');
+      setFormPrice('');
+      setPreviewUrl(null);
+    } catch (e) {
+      console.error("寫入操作失敗:", e);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const renderContent = () => {
+    if (isAuthenticating) {
+      return (
+        <div className="flex flex-col items-center justify-center py-40 space-y-6">
+          <Loader2 className="w-16 h-16 text-blue-500 animate-spin" />
+          <p className="text-slate-400 font-black tracking-widest uppercase">身分驗證中...</p>
+        </div>
+      );
+    }
+
+    if (activeTab === 'DETAIL' && selectedCollection) {
+      const filteredItems = items.filter(item => item.collectionId === selectedCollection.id);
+      return (
+        <div className="space-y-10 animate-in fade-in zoom-in-95 duration-500">
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+            <div className="flex items-center space-x-6">
+              <button onClick={() => {setActiveTab('DASHBOARD'); setSelectedCollection(null);}} className="p-4 bg-slate-800/50 border border-slate-700 rounded-2xl text-slate-400 hover:text-white transition-all">
+                <ChevronLeft size={20} />
+              </button>
+              <div>
+                <h1 className="text-3xl font-black text-white tracking-tighter">{selectedCollection.title}</h1>
+                <p className="text-xs text-slate-500 font-bold tracking-widest uppercase mt-1">資產類別: {selectedCollection.category}</p>
+              </div>
+            </div>
+            <button onClick={() => {setModalType('ITEM'); setIsModalOpen(true);}} className="flex items-center space-x-3 bg-blue-600 text-white px-8 py-4 rounded-2xl shadow-lg font-black text-sm">
+              <Plus size={20} /><span>新增物件</span>
+            </button>
+          </div>
+          
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8">
+            {filteredItems.map(item => (
+              <div key={item.id} className="bg-slate-900/40 border border-slate-800 rounded-[32px] overflow-hidden hover:border-blue-500/30 transition-all group">
+                <div className="h-64 overflow-hidden relative bg-slate-950">
+                  {item.img ? (
+                    <img src={item.img} className="w-full h-full object-cover" alt={item.name} />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-slate-800"><Layers size={48} /></div>
+                  )}
+                </div>
+                <div className="p-8">
+                  <h4 className="font-black text-white text-lg">{item.name}</h4>
+                  <div className="flex justify-between items-center mt-6">
+                     <p className="text-white font-black text-xl">NT$ {item.price.toLocaleString()}</p>
+                     <button 
+                      onClick={async () => {
+                        const dRef = doc(db, 'artifacts', currentAppId, 'users', user.uid, 'items', item.id);
+                        await deleteDoc(dRef);
+                      }}
+                      className="text-slate-600 hover:text-red-500"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+            <button onClick={() => {setModalType('ITEM'); setIsModalOpen(true);}} className="bg-slate-900/20 border-2 border-dashed border-slate-800 rounded-[32px] h-64 flex flex-col items-center justify-center text-slate-600 hover:border-blue-500/50 hover:text-blue-400 transition-all">
+              <Plus size={32} className="mb-4" />
+              <span className="font-black text-xs tracking-widest uppercase text-center px-4">建立新檔案</span>
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    if (activeTab === 'COLLECTIONS') {
+        return (
+          <div className="space-y-10 animate-in fade-in duration-500">
+            <div className="flex justify-between items-end">
+              <h1 className="text-5xl font-black text-white tracking-tighter italic">資產庫管理</h1>
+              <button onClick={() => {setModalType('CATEGORY'); setIsModalOpen(true);}} className="bg-white text-black px-10 py-5 rounded-3xl font-black flex items-center space-x-3">
+                <Plus size={20} /><span>新增分類</span>
+              </button>
+            </div>
+            <div className="bg-slate-900/40 rounded-[48px] border border-slate-800 overflow-hidden">
+               <table className="w-full text-left">
+                 <thead className="bg-white/5 text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                   <tr>
+                     <th className="px-12 py-8">分類標題</th>
+                     <th className="px-12 py-8">類別</th>
+                     <th className="px-12 py-8 text-right">管理</th>
+                   </tr>
+                 </thead>
+                 <tbody className="divide-y divide-slate-800/50 text-white">
+                   {collections.map(col => (
+                     <tr key={col.id} className="hover:bg-blue-500/5 transition-colors">
+                       <td className="px-12 py-8 font-black flex items-center space-x-4">
+                         <span className="text-2xl">{col.icon || '💎'}</span>
+                         <span>{col.title}</span>
+                       </td>
+                       <td className="px-12 py-8"><span className="bg-slate-800 px-3 py-1 rounded text-xs">{col.category || '未分類'}</span></td>
+                       <td className="px-12 py-8 text-right">
+                         <button onClick={async () => {
+                           const dRef = doc(db, 'artifacts', currentAppId, 'public', 'data', 'categories', col.id);
+                           await deleteDoc(dRef);
+                         }} className="text-red-500/50 hover:text-red-500"><Trash2 size={18}/></button>
+                       </td>
+                     </tr>
+                   ))}
+                 </tbody>
+               </table>
+            </div>
+          </div>
+        );
+    }
+
+    return (
+      <div className="space-y-12 animate-in fade-in duration-700">
+        <div className="bg-slate-900 rounded-[64px] border border-slate-800 p-16 relative overflow-hidden shadow-2xl">
+          <div className="relative z-10">
+            <h1 className="text-6xl font-black text-white mb-6 italic tracking-tighter">
+              {user?.displayName ? `你好, ${user.displayName.toUpperCase()}` : "私人資產管理面板"}
+            </h1>
+            <div className="flex flex-col space-y-4">
+              <p className="text-slate-400 text-xl opacity-80 max-w-2xl">
+                {user?.displayName ? "所有收藏數據已同步至雲端核心。" : "將您的實體收藏轉化為數位資產，開始專業化管理。"}
+              </p>
+              {!user?.displayName && (
+                <div className="flex flex-col space-y-4 mt-6">
+                  <div ref={googleBtnContainerRef} className="inline-block p-1 bg-slate-950 rounded-full border border-slate-800 w-fit"></div>
+                  <p className="text-[10px] text-slate-600 font-bold uppercase tracking-widest italic">
+                    {user?.isAnonymous ? "訪客模式 | 資料暫存於此裝置" : "驗證成功"}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
+          {collections.map((col) => (
+            <div key={col.id} onClick={() => { setSelectedCollection(col); setActiveTab('DETAIL'); }} className="bg-slate-900/40 rounded-[48px] border border-slate-800 p-10 group hover:border-blue-500/30 cursor-pointer transition-all">
+              <div className={`w-16 h-16 rounded-[24px] bg-gradient-to-br ${col.color || 'from-blue-600 to-indigo-600'} flex items-center justify-center text-3xl mb-8 shadow-xl group-hover:scale-110 transition-transform`}>{col.icon || '💎'}</div>
+              <h3 className="font-black text-white text-xl group-hover:text-blue-400 transition-colors">{col.title}</h3>
+              <p className="text-[10px] font-black text-slate-600 mt-2 uppercase tracking-widest">{col.category || 'GENERAL'}</p>
+            </div>
+          ))}
+          <button onClick={() => {setModalType('CATEGORY'); setIsModalOpen(true);}} className="bg-slate-900/20 border-2 border-dashed border-slate-800 rounded-[48px] flex flex-col items-center justify-center text-slate-600 hover:border-blue-500/50 transition-all p-12 min-h-[200px]">
+            <Plus size={32} />
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="flex min-h-screen bg-[#020617] text-slate-300 font-sans w-full overflow-x-hidden">
+      <div className="fixed inset-0 pointer-events-none opacity-10" style={{ backgroundImage: 'radial-gradient(#3b82f6 1px, transparent 1px)', backgroundSize: '40px 40px' }} />
+
+      <aside className="w-80 bg-slate-950/80 backdrop-blur-3xl border-r border-slate-900 flex flex-col fixed h-full z-40">
+        <div className="p-12 flex items-center space-x-4 cursor-pointer" onClick={() => {setActiveTab('DASHBOARD'); setSelectedCollection(null);}}>
+          <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center text-white shadow-lg"><Layers size={24} /></div>
+          <div><span className="text-2xl font-black text-white leading-none">COLL-MASTER</span></div>
+        </div>
+        <nav className="flex-1 px-8 space-y-4">
+          <SidebarItem icon={LayoutDashboard} label="儀表板" active={activeTab === 'DASHBOARD' || activeTab === 'DETAIL'} onClick={() => setActiveTab('DASHBOARD')} />
+          <SidebarItem icon={Database} label="檔案管理" active={activeTab === 'COLLECTIONS'} onClick={() => setActiveTab('COLLECTIONS')} />
+          <SidebarItem icon={TrendingUp} label="價值趨勢" active={activeTab === 'ANALYTICS'} onClick={() => setActiveTab('ANALYTICS')} />
+        </nav>
+        {user && (
+          <button onClick={handleLogout} className="p-10 flex items-center space-x-4 text-slate-500 hover:text-red-400 transition-colors">
+            <LogOut size={20} /> <span className="font-bold text-xs uppercase">登出系統</span>
+          </button>
+        )}
+      </aside>
+
+      <main className="flex-1 ml-80 p-16 relative z-10 min-w-0">
+        {renderContent()}
+      </main>
+
+      {/* Modal */}
+      {isModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/80 backdrop-blur-sm">
+          <div className="relative w-full max-w-xl bg-slate-900 rounded-[48px] border border-slate-800 p-12 space-y-8 animate-in zoom-in-95">
+            <div className="flex justify-between items-center">
+              <h2 className="text-2xl font-black text-white italic">建立 {modalType === 'ITEM' ? '資產項目' : '新分類'}</h2>
+              <button onClick={() => setIsModalOpen(false)} className="text-slate-500 hover:text-white"><X size={24}/></button>
+            </div>
+            
+            <div className="space-y-4">
+              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-4">基本屬性</label>
+              <input 
+                type="text" 
+                placeholder="物件名稱..." 
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+                className="w-full px-8 py-5 bg-slate-950 border border-slate-800 rounded-2xl text-white outline-none focus:border-blue-500 transition-colors" 
+              />
+              
+              {modalType === 'ITEM' && (
+                <input 
+                  type="number" 
+                  placeholder="估計價值 (TWD)" 
+                  value={formPrice}
+                  onChange={(e) => setFormPrice(e.target.value)}
+                  className="w-full px-8 py-5 bg-slate-950 border border-slate-800 rounded-2xl text-white outline-none focus:border-blue-500 transition-colors" 
+                />
+              )}
+            </div>
+
+            <div className="space-y-4">
+              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-4">視覺存證</label>
+              <div 
+                onClick={() => fileInputRef.current?.click()} 
+                className="border-2 border-dashed border-slate-800 rounded-3xl h-48 flex items-center justify-center cursor-pointer overflow-hidden hover:border-blue-500 transition-all bg-slate-950 group"
+              >
+                {previewUrl ? <img src={previewUrl} className="w-full h-full object-cover" /> : <Upload className="text-slate-700 group-hover:text-blue-500 transition-colors" size={32}/>}
+              </div>
+            </div>
+            <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileChange} accept="image/*" />
+
+            <button 
+              disabled={isSaving}
+              onClick={handleSave} 
+              className="w-full py-6 bg-blue-600 text-white font-black rounded-2xl shadow-xl hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center space-x-2 disabled:opacity-50 disabled:hover:scale-100"
+            >
+              {isSaving && <Loader2 className="animate-spin" size={20} />}
+              <span>{isSaving ? "處理中..." : "確認存檔"}</span>
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
